@@ -4,14 +4,111 @@ from collections import defaultdict
 import uuid
 import os
 
-# Global state for real-time processing
-pos_skus_cache = {}
-rfid_cache = {}
-product_recognition_cache = {}
-product_data_cache = {}
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+CACHE_WINDOW_MINUTES = 30  # How long to keep data in cache
+CLEANUP_INTERVAL = 100  # Clean cache every N processed rows
+MAX_CACHE_SIZE = 10000  # Maximum entries per cache before forced cleanup
+
+# Global state for real-time processing with timestamps
+pos_skus_cache = {}  # {sku: {'customer_id': str, 'timestamp': datetime}}
+rfid_cache = {}  # {key: {'sku': str, 'timestamp': datetime}}
+product_recognition_cache = {}  # {key: {'predicted_sku': str, 'timestamp': datetime}}
+product_data_cache = {}  # Static product catalog (no expiration needed)
 error_aggregation = defaultdict(lambda: defaultdict(int))
 queue_state = defaultdict(lambda: {'start_time': None, 'flagged': set()})
 sales_count = defaultdict(int)
+
+# Counter for periodic cleanup
+rows_processed = 0
+
+# ============================================================================
+# CACHE MANAGEMENT FUNCTIONS
+# ============================================================================
+
+def cleanup_caches():
+    """
+    Remove expired entries from all time-sensitive caches.
+    Called periodically to prevent memory bloat.
+    Also enforces maximum cache size limits.
+    """
+    current_time = datetime.now()
+    expiration_threshold = timedelta(minutes=CACHE_WINDOW_MINUTES)
+    
+    total_cleaned = 0
+    
+    # Clean POS cache
+    expired_keys = [
+        sku for sku, data in pos_skus_cache.items()
+        if current_time - data['timestamp'] > expiration_threshold
+    ]
+    for key in expired_keys:
+        del pos_skus_cache[key]
+    total_cleaned += len(expired_keys)
+    
+    # If still too large, remove oldest entries
+    if len(pos_skus_cache) > MAX_CACHE_SIZE:
+        sorted_items = sorted(pos_skus_cache.items(), key=lambda x: x[1]['timestamp'])
+        to_remove = len(pos_skus_cache) - MAX_CACHE_SIZE
+        for key, _ in sorted_items[:to_remove]:
+            del pos_skus_cache[key]
+        total_cleaned += to_remove
+    
+    # Clean RFID cache
+    expired_keys = [
+        key for key, data in rfid_cache.items()
+        if current_time - data['timestamp'] > expiration_threshold
+    ]
+    for key in expired_keys:
+        del rfid_cache[key]
+    total_cleaned += len(expired_keys)
+    
+    # Enforce size limit
+    if len(rfid_cache) > MAX_CACHE_SIZE:
+        sorted_items = sorted(rfid_cache.items(), key=lambda x: x[1]['timestamp'])
+        to_remove = len(rfid_cache) - MAX_CACHE_SIZE
+        for key, _ in sorted_items[:to_remove]:
+            del rfid_cache[key]
+        total_cleaned += to_remove
+    
+    # Clean product recognition cache
+    expired_keys = [
+        key for key, data in product_recognition_cache.items()
+        if current_time - data['timestamp'] > expiration_threshold
+    ]
+    for key in expired_keys:
+        del product_recognition_cache[key]
+    total_cleaned += len(expired_keys)
+    
+    # Enforce size limit
+    if len(product_recognition_cache) > MAX_CACHE_SIZE:
+        sorted_items = sorted(product_recognition_cache.items(), key=lambda x: x[1]['timestamp'])
+        to_remove = len(product_recognition_cache) - MAX_CACHE_SIZE
+        for key, _ in sorted_items[:to_remove]:
+            del product_recognition_cache[key]
+        total_cleaned += to_remove
+    
+    # Clean error aggregation (keep only recent intervals)
+    for station_id in list(error_aggregation.keys()):
+        expired_intervals = [
+            interval for interval in error_aggregation[station_id].keys()
+            if current_time - interval > expiration_threshold
+        ]
+        for interval in expired_intervals:
+            del error_aggregation[station_id][interval]
+    
+    if total_cleaned > 0:
+        print(f"[CACHE] Cleaned {total_cleaned} expired/excess entries")
+
+
+def parse_timestamp(timestamp_str):
+    """Parse ISO timestamp string to datetime object."""
+    try:
+        return datetime.fromisoformat(timestamp_str.replace('Z', '+00:00')).replace(tzinfo=None)
+    except:
+        return datetime.now()
+
 
 # ============================================================================
 # REAL-TIME DETECTION FUNCTIONS (Process one row at a time)
@@ -21,13 +118,14 @@ def detect_scan_avoidance_row(rfid_row):
     """
     Process one RFID reading row in real-time.
     Flags if item leaves scan area without POS record.
+    Now checks only within time window.
     """
     sku = rfid_row['data']['sku']
     location = rfid_row['data']['location']
     timestamp = rfid_row['timestamp']
     station_id = rfid_row.get("station_id", "Unknown")
     
-    # Check if item left scan area and not in POS
+    # Check if item left scan area and not in POS cache (within time window)
     if location == "OUT_SCAN_AREA" and sku not in pos_skus_cache:
         event = {
             "timestamp": timestamp,
@@ -35,7 +133,7 @@ def detect_scan_avoidance_row(rfid_row):
             "event_data": {
                 "event_name": "Scanner Avoidance",
                 "station_id": station_id,
-                "customer_id": pos_skus_cache.get(sku),
+                "customer_id": None,
                 "product_sku": sku
             }
         }
@@ -57,8 +155,11 @@ def detect_barcode_switch_row(pos_row):
     station_id = pos_row.get("station_id", "Unknown")
     customer_id = pos_row['data'].get("customer_id", "Unknown")
     
-    # Update POS cache
-    pos_skus_cache[sku_pos] = customer_id
+    # Update POS cache with timestamp (replaces older entry for same SKU)
+    pos_skus_cache[sku_pos] = {
+        'customer_id': customer_id,
+        'timestamp': parse_timestamp(timestamp)
+    }
     
     # Get prices from cache
     sku_price = product_data_cache.get(sku_pos, {}).get('price', 0)
@@ -66,8 +167,11 @@ def detect_barcode_switch_row(pos_row):
     
     # Get RFID/predicted data
     lookup_key = f"{timestamp}_{station_id}"
-    predicted_sku = product_recognition_cache.get(lookup_key)
-    actual_sku = rfid_cache.get(lookup_key)
+    predicted_data = product_recognition_cache.get(lookup_key, {})
+    predicted_sku = predicted_data.get('predicted_sku') if predicted_data else None
+    
+    rfid_data = rfid_cache.get(lookup_key, {})
+    actual_sku = rfid_data.get('sku') if rfid_data else None
     
     # Method 1: Compare with RFID and predicted product
     if predicted_sku and actual_sku:
@@ -174,7 +278,7 @@ def detect_system_error_row(data_row, interval_minutes=10, recurring_threshold=3
     
     # Aggregate for recurring detection
     try:
-        dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+        dt = parse_timestamp(timestamp)
         interval_key = dt.replace(second=0, microsecond=0)
         interval_key = interval_key - timedelta(minutes=interval_key.minute % interval_minutes)
         
@@ -210,7 +314,7 @@ def detect_long_queue_row(queue_row, count_threshold=5, duration_threshold_secon
     station_id = queue_row['station_id']
     
     try:
-        current_time = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+        current_time = parse_timestamp(timestamp)
     except:
         return None
     
@@ -318,21 +422,37 @@ def detect_inventory_discrepancy_row(inventory_row, tolerance=1):
 # ============================================================================
 
 def update_rfid_cache(rfid_row):
-    """Update RFID cache when new reading arrives."""
+    """
+    Update RFID cache when new reading arrives with timestamp.
+    Replaces older entries with the same timestamp_station key.
+    """
     timestamp = rfid_row['timestamp']
     sku = rfid_row['data']['sku']
     station_id = rfid_row.get('station_id', 'Unknown')
     key = f"{timestamp}_{station_id}"
-    rfid_cache[key] = sku
+    
+    # Always update/replace - newer data overwrites older
+    rfid_cache[key] = {
+        'sku': sku,
+        'timestamp': parse_timestamp(timestamp)
+    }
 
 
 def update_product_recognition_cache(recognition_row):
-    """Update product recognition cache when new prediction arrives."""
+    """
+    Update product recognition cache when new prediction arrives with timestamp.
+    Replaces older entries with the same timestamp_station key.
+    """
     timestamp = recognition_row['timestamp']
     predicted_sku = recognition_row['data']['predicted_product']
     station_id = recognition_row.get('station_id', 'Unknown')
     key = f"{timestamp}_{station_id}"
-    product_recognition_cache[key] = predicted_sku
+    
+    # Always update/replace - newer data overwrites older
+    product_recognition_cache[key] = {
+        'predicted_sku': predicted_sku,
+        'timestamp': parse_timestamp(timestamp)
+    }
 
 
 def update_pos_cache(pos_row):
@@ -342,7 +462,7 @@ def update_pos_cache(pos_row):
 
 
 def load_product_data(product_data):
-    """Load product catalog into cache (one-time setup)."""
+    """Load product catalog into cache (one-time setup, no expiration)."""
     for p in product_data:
         sku = p['SKU']
         product_data_cache[sku] = {
@@ -391,6 +511,13 @@ def process_incoming_row(row, data_source):
         row: Single data row (dict)
         data_source: Type of data ('rfid', 'pos', 'queue', 'product_recognition', 'inventory')
     """
+    global rows_processed
+    
+    # Periodic cache cleanup
+    rows_processed += 1
+    if rows_processed % CLEANUP_INTERVAL == 0:
+        cleanup_caches()
+    
     if data_source == 'rfid':
         update_rfid_cache(row)
         return detect_scan_avoidance_row(row)
@@ -434,7 +561,9 @@ if __name__ == "__main__":
     from utils import read_jsonl, read_csv
     
     print("="*70)
-    print("REAL-TIME DETECTION SYSTEM - Processing rows as they arrive")
+    print("REAL-TIME DETECTION SYSTEM - Time-Windowed Cache")
+    print(f"Cache Window: {CACHE_WINDOW_MINUTES} minutes")
+    print(f"Max Cache Size: {MAX_CACHE_SIZE} entries")
     print("="*70)
     
     # One-time setup: Load product catalog
@@ -481,6 +610,14 @@ if __name__ == "__main__":
     for row in inventory_data:
         result = process_incoming_row(row, 'inventory')
         if result: event_count += (len(result) if isinstance(result, list) else 1)
+    
+    # Final cleanup and stats
+    cleanup_caches()
+    
+    print("\n[CACHE] Final cache sizes:")
+    print(f"  - POS cache: {len(pos_skus_cache)} entries")
+    print(f"  - RFID cache: {len(rfid_cache)} entries")
+    print(f"  - Product Recognition cache: {len(product_recognition_cache)} entries")
     
     print("\n" + "="*70)
     print(f"PROCESSING COMPLETE - {event_count} events logged")
