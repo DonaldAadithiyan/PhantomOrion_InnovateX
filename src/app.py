@@ -186,22 +186,23 @@ class RealTimeDetectionApp:
         return events
     
     def save_events(self, events: List[Dict[str, Any]]) -> str:
-        """Save events to a JSONL file."""
+        """Save events to a single JSONL file."""
         if not events:
             return ""
         
         # Create output directory if it doesn't exist
-        os.makedirs(self.output_dir, exist_ok=True)
+        output_dir = "output/test"
+        os.makedirs(output_dir, exist_ok=True)
         
-        # Generate filename with timestamp
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_file = os.path.join(self.output_dir, f"detection_events_{timestamp}.jsonl")
+        # Use single file for all events
+        output_file = os.path.join(output_dir, "events.jsonl")
         
         try:
-            with open(output_file, 'w') as f:
+            # Append to the file instead of overwriting
+            with open(output_file, 'a') as f:
                 for event in events:
                     f.write(json.dumps(event) + "\n")
-            print(f"  → Saved {len(events)} events to {output_file}")
+            print(f"  → Appended {len(events)} events to {output_file}")
             return output_file
         except Exception as e:
             print(f"  → Error saving events: {e}")
@@ -237,7 +238,7 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8765, help="Stream server port")
     parser.add_argument("--product-data", default="../data/input/products_list.csv", 
                        help="Path to products CSV file")
-    parser.add_argument("--output-dir", default="logs", 
+    parser.add_argument("--output-dir", default="output/test", 
                        help="Directory to save detection results")
     parser.add_argument("--detection-interval", type=int, default=5,
                        help="Run detections every N seconds")
