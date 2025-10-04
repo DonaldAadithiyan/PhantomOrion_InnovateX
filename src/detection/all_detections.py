@@ -1,7 +1,7 @@
 import json
 from datetime import datetime, timedelta
 from collections import defaultdict
-from utils import read_jsonl, read_csv
+from .utils import read_jsonl, read_csv
 import uuid
 import os
 
