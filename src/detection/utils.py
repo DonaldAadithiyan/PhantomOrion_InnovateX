@@ -41,9 +41,20 @@ def read_csv(filepath):
     data = []
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
+            lines = f.readlines()
+            # Skip empty lines at the beginning
+            start_line = 0
+            for i, line in enumerate(lines):
+                if line.strip() and not line.startswith(','):
+                    start_line = i
+                    break
+            
+            # Read from the first non-empty line
+            reader = csv.DictReader(lines[start_line:])
             for row in reader:
-                data.append(row)
+                # Skip empty rows
+                if any(row.values()):
+                    data.append(row)
         return data
     except FileNotFoundError:
         print(f"Error: File not found - {filepath}")

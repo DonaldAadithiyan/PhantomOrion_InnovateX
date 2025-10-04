@@ -22,7 +22,7 @@ def detect_scan_avoidance(rfid_data, pos_data):
             customer_id = pos_skus.get(sku)
             events.append({
                 "timestamp": timestamp,
-                "event_id": f"E{str(uuid.uuid4())[:5]}",
+                "event_id": f"E{str(uuid.uuid4())[:3]}",
                 "event_data": {
                     "event_name": "Scanner Avoidance",
                     "station_id": station_id,
@@ -95,16 +95,13 @@ def detect_barcode_switch(pos_data, rfid_data, product_data, product_recognition
             if barcode_price < predicted_price and actual_sku != scanned_barcode:
                 events.append({
                     "timestamp": timestamp,
-                    "event_id": f"E{str(uuid.uuid4())[:8]}",
+                    "event_id": f"E{str(uuid.uuid4())[:3]}",
                     "event_data": {
                         "event_name": "Barcode Switching",
                         "station_id": station_id,
                         "customer_id": customer_id,
                         "actual_sku": actual_sku,
-                        "scanned_barcode": scanned_barcode,
-                        "scanned_price": barcode_price,
-                        "actual_price": actual_price,
-                        "price_difference": actual_price - barcode_price
+                        "scanned_sku": scanned_barcode
                     }
                 })
         # Method 2: Fallback - simple SKU vs barcode comparison
@@ -116,16 +113,13 @@ def detect_barcode_switch(pos_data, rfid_data, product_data, product_recognition
             if sku_price != barcode_price:
                 events.append({
                     "timestamp": timestamp,
-                    "event_id": f"E{str(uuid.uuid4())[:8]}",
+                    "event_id": f"E{str(uuid.uuid4())[:3]}",
                     "event_data": {
                         "event_name": "Barcode Switching",
                         "station_id": station_id,
                         "customer_id": customer_id,
                         "actual_sku": sku_pos,
-                        "scanned_barcode": scanned_barcode,
-                        "scanned_price": barcode_price,
-                        "actual_price": sku_price,
-                        "price_difference": sku_price - barcode_price
+                        "scanned_sku": scanned_barcode
                     }
                 })
     
@@ -149,15 +143,14 @@ def detect_weight_discrepancy(pos_data, product_data, threshold=5):
         if abs(actual_weight - expected_weight) > threshold:
             events.append({
                 "timestamp": timestamp,
-                "event_id": f"E{str(uuid.uuid4())[:5]}",
+                "event_id": f"E{str(uuid.uuid4())[:3]}",
                 "event_data": {
                     "event_name": "Weight Discrepancies",
                     "station_id": station_id,
                     "customer_id": customer_id,
                     "product_sku": sku,
                     "expected_weight": expected_weight,
-                    "actual_weight": actual_weight,
-                    "difference": abs(actual_weight - expected_weight)
+                    "actual_weight": actual_weight
                 }
             })
     return events
@@ -196,11 +189,10 @@ def detect_system_errors(*datasets, interval_minutes=10, recurring_threshold=3):
                 # Log individual error
                 events.append({
                     "timestamp": timestamp,
-                    "event_id": f"E{str(uuid.uuid4())[:5]}",
+                    "event_id": f"E{str(uuid.uuid4())[:3]}",
                     "event_data": {
-                        "event_name": "System Error",
+                        "event_name": "Unexpected Systems Crash",
                         "station_id": station_id,
-                        "error_type": record['status'],
                         "duration_seconds": record.get("duration_seconds", None)
                     }
                 })
@@ -272,13 +264,11 @@ def detect_long_queue(queue_data, count_threshold=5, duration_threshold_seconds=
                         if long_queue_duration >= duration_threshold_seconds and interval_key not in flagged_intervals:
                             events.append({
                                 "timestamp": timestamp,
-                                "event_id": f"E{str(uuid.uuid4())[:5]}",
+                                "event_id": f"E{str(uuid.uuid4())[:3]}",
                                 "event_data": {
                                     "event_name": "Long Queue Length",
                                     "station_id": station_id,
-                                    "num_of_customers": customer_count,
-                                    "queue_duration_seconds": long_queue_duration,
-                                    "average_dwell_time": record['data'].get('average_dwell_time')
+                                    "num_of_customers": customer_count
                                 }
                             })
                             flagged_intervals.add(interval_key)
@@ -307,13 +297,12 @@ def detect_extended_wait(queue_data, dwell_threshold=300):
             
             events.append({
                 "timestamp": q['timestamp'],
-                "event_id": f"E{str(uuid.uuid4())[:5]}",
+                "event_id": f"E{str(uuid.uuid4())[:3]}",
                 "event_data": {
-                    "event_name": "Long Wait Time",
+                    "event_name": "Long Wait_Time",
                     "station_id": q['station_id'],
-                    "wait_time_seconds": avg_dwell,
-                    "customer_count": customer_count,
-                    "priority": priority
+                    "customer_id": q.get('customer_id', 'Unknown'),
+                    "wait_time_seconds": avg_dwell
                 }
             })
     return events
@@ -365,15 +354,12 @@ def detect_inventory_discrepancy(current_inventory, pos_data, product_data, tole
             
             events.append({
                 "timestamp": latest_inventory.get("timestamp", "Unknown"),
-                "event_id": f"E{str(uuid.uuid4())[:8]}",
+                "event_id": f"E{str(uuid.uuid4())[:3]}",
                 "event_data": {
                     "event_name": "Inventory Discrepancy",
                     "SKU": sku,
                     "Expected_Inventory": expected_qty,
-                    "Actual_Inventory": actual_qty,
-                    "Discrepancy": discrepancy,
-                    "Type": discrepancy_type,
-                    "Units_Sold": sales_count.get(sku, 0)
+                    "Actual_Inventory": actual_qty
                 }
             })
     

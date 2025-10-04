@@ -62,6 +62,9 @@ class RealTimeDetectionApp:
             'start_time': None
         }
         
+        # Track processed events to avoid duplicates
+        self.processed_events = set()
+        
     def add_event(self, event: Dict[str, Any]) -> None:
         """Add an event to the appropriate buffer based on dataset type."""
         dataset = event.get('dataset', '')
@@ -95,6 +98,32 @@ class RealTimeDetectionApp:
             buffer = getattr(self, buffer_name)
             if len(buffer) > self.buffer_size:
                 setattr(self, buffer_name, buffer[-self.buffer_size:])
+    
+    def _deduplicate_events(self, events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Remove duplicate events based on event content."""
+        new_events = []
+        for event in events:
+            # Create a unique key for the event
+            event_name = event['event_data']['event_name']
+            timestamp = event['timestamp']
+            station_id = event['event_data'].get('station_id', '')
+            
+            # Create specific keys based on event type
+            if event_name == "Inventory Discrepancy":
+                sku = event['event_data'].get('SKU', '')
+                event_key = f"{event_name}_{sku}_{timestamp}"
+            elif event_name == "Barcode Switching":
+                customer_id = event['event_data'].get('customer_id', '')
+                actual_sku = event['event_data'].get('actual_sku', '')
+                event_key = f"{event_name}_{station_id}_{customer_id}_{actual_sku}_{timestamp}"
+            else:
+                event_key = f"{event_name}_{station_id}_{timestamp}"
+            
+            if event_key not in self.processed_events:
+                self.processed_events.add(event_key)
+                new_events.append(event)
+        
+        return new_events
     
     def run_detections(self) -> List[Dict[str, Any]]:
         """Run all detection algorithms on current data."""
@@ -136,13 +165,18 @@ class RealTimeDetectionApp:
             print(f"  → Extended Wait Times: {len(extended_waits)} events")
             events.extend(extended_waits)
             
-            # Inventory Discrepancy Detection
-            inventory_disc = detect_inventory_discrepancy(self.inventory_data, self.pos_data, self.product_data)
-            print(f"  → Inventory Discrepancies: {len(inventory_disc)} events")
-            events.extend(inventory_disc)
+            # Inventory Discrepancy Detection - only run if we have product data
+            if self.product_data:
+                inventory_disc = detect_inventory_discrepancy(self.inventory_data, self.pos_data, self.product_data)
+                print(f"  → Inventory Discrepancies: {len(inventory_disc)} events")
+                events.extend(inventory_disc)
+            else:
+                print(f"  → Inventory Discrepancies: 0 events (no product data)")
             
-            self.stats['events_detected'] += len(events)
-            print(f"  → Total events detected: {len(events)}")
+            # Only add new events (deduplicate)
+            new_events = self._deduplicate_events(events)
+            self.stats['events_detected'] += len(new_events)
+            print(f"  → New events detected: {len(new_events)} (total: {len(events)})")
             
         except Exception as e:
             print(f"  → Error running detections: {e}")
